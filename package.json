@@ -3,8 +3,8 @@
   "title": "Syncthing Conflicts Helper",
   "description": "A Logseq plugin to help resolving Syncthing conflicts.",
   "author": "Rémi Aubel",
-  "version": "0.0.4",
-  "main": "dist/index.js",
+  "version": "0.0.5",
+  "main": "index.html",
   "icon": "icon.png",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=iife --global-name=plugin",

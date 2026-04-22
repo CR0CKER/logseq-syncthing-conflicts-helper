@@ -2,8 +2,12 @@ import '@logseq/libs';
 import {createTwoFilesPatch} from 'diff';
 import {settingsSchema} from "./settings";
 
-//TODO: provide an icon (referenced in plugin.json)
 const pluginName = 'syncthing-conflicts-helper';
+
+// Lucide check-circle-2 — MIT license (lucide.dev)
+const ICON_OK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`;
+// Lucide alert-circle — MIT license (lucide.dev)
+const ICON_ALERT = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#dc2626" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>`;
 const defaultConflictPageName = 'Syncthing Conflicts Report';
 
 const conflictPageName = (): string => logseq.settings?.conflictPageName as string ?? defaultConflictPageName;
@@ -22,11 +26,10 @@ async function conflicts() {
     );
 }
 
-function registerButton(emoji: string, title: string, onClick: () => void) {
+function registerButton(svg: string, title: string, onClick: () => void) {
     logseq.App.registerUIItem('toolbar', {
-        // TODO: how to provide a label for the button when it is in the menu
         key: 'syncthing-conflicts',
-        template: `<a class="button" data-on-click="onClick" title="${title}"> <span style="font-size: 16px;">${emoji}</span></a>`
+        template: `<a class="button syncthing-conflicts-btn" data-on-click="onClick" title="${title}">${svg}</a>`
     });
     logseq.provideModel({onClick: onClick});
 }
@@ -58,12 +61,12 @@ async function updateStatus(pageName: string) {
     const files = await conflicts();
     if (files.length === 0) {
         console.log(`${pluginName}: no conflicts found.`);
-        registerButton("✅", "No Conflicts", () => {
+        registerButton(ICON_OK, "No Conflicts", () => {
             logseq.UI.showMsg("No sync conflicts found!", "success");
         });
     } else {
         console.log(`${pluginName}: found ${files.length} conflict(s).`);
-        registerButton("🚨", `View ${count(files.length, 'Conflict')}`, async () => {
+        registerButton(ICON_ALERT, `View ${count(files.length, 'Conflict')}`, async () => {
             await logseq.Editor.deletePage(pageName);
             const page = await logseq.Editor.createPage(pageName, {}, {createFirstBlock: false});
             if (page) {
@@ -109,6 +112,15 @@ async function execute() {
 
 async function initialize() {
     logseq.useSettingsSchema(settingsSchema);
+
+    logseq.provideStyle(`
+      .syncthing-conflicts-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ls-header-button-background);
+      }
+    `);
 
     logseq.App.onMacroRendererSlotted(({slot, payload}) => {
         const [macroName, ...args] = payload.arguments as string[];

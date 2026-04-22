@@ -2895,6 +2895,11 @@ var plugin = (() => {
   }
 
   // node_modules/diff/libesm/patch/create.js
+  var INCLUDE_HEADERS = {
+    includeIndex: true,
+    includeUnderline: true,
+    includeFileHeaders: true
+  };
   function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
     let optionsObj;
     if (!options) {
@@ -3001,17 +3006,27 @@ var plugin = (() => {
       };
     }
   }
-  function formatPatch(patch) {
+  function formatPatch(patch, headerOptions) {
+    if (!headerOptions) {
+      headerOptions = INCLUDE_HEADERS;
+    }
     if (Array.isArray(patch)) {
-      return patch.map(formatPatch).join("\n");
+      if (patch.length > 1 && !headerOptions.includeFileHeaders) {
+        throw new Error("Cannot omit file headers on a multi-file patch. (The result would be unparseable; how would a tool trying to apply the patch know which changes are to which file?)");
+      }
+      return patch.map((p) => formatPatch(p, headerOptions)).join("\n");
     }
     const ret = [];
-    if (patch.oldFileName == patch.newFileName) {
+    if (headerOptions.includeIndex && patch.oldFileName == patch.newFileName) {
       ret.push("Index: " + patch.oldFileName);
     }
-    ret.push("===================================================================");
-    ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
-    ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
+    if (headerOptions.includeUnderline) {
+      ret.push("===================================================================");
+    }
+    if (headerOptions.includeFileHeaders) {
+      ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
+      ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
+    }
     for (let i = 0; i < patch.hunks.length; i++) {
       const hunk = patch.hunks[i];
       if (hunk.oldLines === 0) {
@@ -3036,14 +3051,14 @@ var plugin = (() => {
       if (!patchObj) {
         return;
       }
-      return formatPatch(patchObj);
+      return formatPatch(patchObj, options === null || options === void 0 ? void 0 : options.headerOptions);
     } else {
       const { callback } = options;
       structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, Object.assign(Object.assign({}, options), { callback: (patchObj) => {
         if (!patchObj) {
           callback(void 0);
         } else {
-          callback(formatPatch(patchObj));
+          callback(formatPatch(patchObj, options.headerOptions));
         }
       } }));
     }
@@ -3072,6 +3087,8 @@ var plugin = (() => {
 
   // src/index.ts
   var pluginName = "syncthing-conflicts-helper";
+  var ICON_OK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>`;
+  var ICON_ALERT = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#dc2626" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>`;
   var defaultConflictPageName = "Syncthing Conflicts Report";
   var conflictPageName = () => logseq.settings?.conflictPageName ?? defaultConflictPageName;
   var count = (n, singular, plural = singular + "s") => n + " " + (n <= 1 ? singular : plural);
@@ -3086,11 +3103,10 @@ var plugin = (() => {
         `
     );
   }
-  function registerButton(emoji, title, onClick) {
+  function registerButton(svg, title, onClick) {
     logseq.App.registerUIItem("toolbar", {
-      // TODO: how to provide a label for the button when it is in the menu
       key: "syncthing-conflicts",
-      template: `<a class="button" data-on-click="onClick" title="${title}"> <span style="font-size: 16px;">${emoji}</span></a>`
+      template: `<a class="button syncthing-conflicts-btn" data-on-click="onClick" title="${title}">${svg}</a>`
     });
     logseq.provideModel({ onClick });
   }
@@ -3114,12 +3130,12 @@ var plugin = (() => {
     const files = await conflicts();
     if (files.length === 0) {
       console.log(`${pluginName}: no conflicts found.`);
-      registerButton("\u2705", "No Conflicts", () => {
+      registerButton(ICON_OK, "No Conflicts", () => {
         logseq.UI.showMsg("No sync conflicts found!", "success");
       });
     } else {
       console.log(`${pluginName}: found ${files.length} conflict(s).`);
-      registerButton("\u{1F6A8}", `View ${count(files.length, "Conflict")}`, async () => {
+      registerButton(ICON_ALERT, `View ${count(files.length, "Conflict")}`, async () => {
         await logseq.Editor.deletePage(pageName);
         const page = await logseq.Editor.createPage(pageName, {}, { createFirstBlock: false });
         if (page) {
@@ -3163,6 +3179,14 @@ var plugin = (() => {
   }
   async function initialize() {
     logseq.useSettingsSchema(settingsSchema);
+    logseq.provideStyle(`
+      .syncthing-conflicts-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--ls-header-button-background);
+      }
+    `);
     logseq.App.onMacroRendererSlotted(({ slot, payload }) => {
       const [macroName, ...args] = payload.arguments;
       console.log(`${pluginName}: found ${macroName} with args: ${args.join(", ")}`);

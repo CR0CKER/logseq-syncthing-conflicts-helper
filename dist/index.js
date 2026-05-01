@@ -2895,6 +2895,11 @@ var plugin = (() => {
   }
 
   // node_modules/diff/libesm/patch/create.js
+  var INCLUDE_HEADERS = {
+    includeIndex: true,
+    includeUnderline: true,
+    includeFileHeaders: true
+  };
   function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
     let optionsObj;
     if (!options) {
@@ -3001,17 +3006,27 @@ var plugin = (() => {
       };
     }
   }
-  function formatPatch(patch) {
+  function formatPatch(patch, headerOptions) {
+    if (!headerOptions) {
+      headerOptions = INCLUDE_HEADERS;
+    }
     if (Array.isArray(patch)) {
-      return patch.map(formatPatch).join("\n");
+      if (patch.length > 1 && !headerOptions.includeFileHeaders) {
+        throw new Error("Cannot omit file headers on a multi-file patch. (The result would be unparseable; how would a tool trying to apply the patch know which changes are to which file?)");
+      }
+      return patch.map((p) => formatPatch(p, headerOptions)).join("\n");
     }
     const ret = [];
-    if (patch.oldFileName == patch.newFileName) {
+    if (headerOptions.includeIndex && patch.oldFileName == patch.newFileName) {
       ret.push("Index: " + patch.oldFileName);
     }
-    ret.push("===================================================================");
-    ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
-    ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
+    if (headerOptions.includeUnderline) {
+      ret.push("===================================================================");
+    }
+    if (headerOptions.includeFileHeaders) {
+      ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
+      ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
+    }
     for (let i = 0; i < patch.hunks.length; i++) {
       const hunk = patch.hunks[i];
       if (hunk.oldLines === 0) {
@@ -3036,14 +3051,14 @@ var plugin = (() => {
       if (!patchObj) {
         return;
       }
-      return formatPatch(patchObj);
+      return formatPatch(patchObj, options === null || options === void 0 ? void 0 : options.headerOptions);
     } else {
       const { callback } = options;
       structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, Object.assign(Object.assign({}, options), { callback: (patchObj) => {
         if (!patchObj) {
           callback(void 0);
         } else {
-          callback(formatPatch(patchObj));
+          callback(formatPatch(patchObj, options.headerOptions));
         }
       } }));
     }
@@ -3078,13 +3093,31 @@ var plugin = (() => {
   async function conflicts() {
     return await logseq.DB.datascriptQuery(
       `
-        [:find ?name ?page
+        [:find ?orig ?path
             :where
             [?page :block/name ?name]
-            [?page :block/file ?f]     ;; <-- only pages that live in a file
+            [?page :block/original-name ?orig]
+            [?page :block/file ?f]
+            [?f :file/path ?path]
             [(clojure.string/includes? ?name "sync-conflict-")]]
         `
     );
+  }
+  async function findPageByFilePath(path) {
+    const rows = await logseq.DB.datascriptQuery(
+      `
+        [:find ?name ?orig
+            :in $ ?path
+            :where
+            [?page :block/name ?name]
+            [?page :block/original-name ?orig]
+            [?page :block/file ?f]
+            [?f :file/path ?path]]
+        `,
+      JSON.stringify(path)
+    );
+    if (!rows || rows.length === 0) return null;
+    return { name: rows[0][0], originalName: rows[0][1] };
   }
   function registerButton(emoji, title, onClick) {
     logseq.App.registerUIItem("toolbar", {
@@ -3103,6 +3136,7 @@ var plugin = (() => {
       }
     }
     const blocks = await logseq.Editor.getPageBlocksTree(pageName);
+    if (!blocks) return "";
     for (const block of blocks) walk(block);
     const content2 = lines.join("\n").replace(/^/gm, "| ");
     if (ignoreCollapsed) {
@@ -3126,21 +3160,25 @@ var plugin = (() => {
           const pageContent = `The following sync conflicts were found`;
           const parentBlock = await logseq.Editor.insertBlock(pageName, pageContent);
           for (const file of files) {
-            const conflictFileName = file[0];
-            const conflictContent = await content(conflictFileName);
-            const originalFileName = conflictFileName.replace(/\.sync-conflict-.*/, "");
-            const originalContent = await content(originalFileName);
-            const diff = createTwoFilesPatch(originalFileName, conflictFileName, originalContent, conflictContent);
+            const conflictDisplayName = file[0];
+            const conflictFilePath = file[1];
+            const conflictContent = await content(conflictDisplayName);
+            const originalFilePath = conflictFilePath.replace(/\.sync-conflict-[^.\/]*/, "");
+            const originalPage = await findPageByFilePath(originalFilePath);
+            const originalDisplayName = originalPage?.originalName ?? conflictDisplayName.replace(/\.sync-conflict-.*/, "");
+            const originalContent = originalPage ? await content(originalPage.name) : "";
+            const diff = createTwoFilesPatch(originalDisplayName, conflictDisplayName, originalContent, conflictContent);
             const added = diff.split("\n").filter((value) => value.startsWith("+") && !value.startsWith("+++")).length;
             const removed = diff.split("\n").filter((value) => value.startsWith("-") && !value.startsWith("---")).length;
             const fileBlock = await logseq.Editor.insertBlock(
               parentBlock.uuid,
               `
-                        [[${originalFileName}]] - [[${conflictFileName}]] (${count(added, "added line")}, ${count(removed, "removed line")}) - {{{renderer syncthing-conflict-helper--mark-as-resolved, ${conflictFileName}}}}
+                        [[${originalDisplayName}]] - [[${conflictDisplayName}]] (${count(added, "added line")}, ${count(removed, "removed line")}) - {{{renderer syncthing-conflict-helper--mark-as-resolved, ${conflictDisplayName}}}}
                         collapsed:: true
                         `.replace(/^ */gm, ""),
               { focus: false }
             );
+            if (!fileBlock) continue;
             await logseq.Editor.insertBlock(
               fileBlock.uuid,
               `

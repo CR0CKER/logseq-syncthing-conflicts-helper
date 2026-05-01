@@ -11,15 +11,40 @@ const conflictPageName = (): string => logseq.settings?.conflictPageName as stri
 const count = (n: number, singular: string, plural: string = singular + 's'): string => n + ' ' + (n <= 1 ? singular : plural);
 
 async function conflicts() {
+    // Return ?orig (original-cased page name, preserves case for journals/etc.)
+    // and ?path (file-system path) so we can resolve the original page by file path.
     return await logseq.DB.datascriptQuery(
         `
-        [:find ?name ?page
+        [:find ?orig ?path
             :where
             [?page :block/name ?name]
-            [?page :block/file ?f]     ;; <-- only pages that live in a file
+            [?page :block/original-name ?orig]
+            [?page :block/file ?f]
+            [?f :file/path ?path]
             [(clojure.string/includes? ?name "sync-conflict-")]]
         `
     );
+}
+
+// Look up a page by the file-system path of its backing file.
+// Needed because for journal pages the page name (e.g. "May 1st, 2026") differs
+// from the on-disk filename stem (e.g. "2026_05_01"), so we cannot derive the
+// original page name from the conflict page name by string manipulation alone.
+async function findPageByFilePath(path: string): Promise<{name: string, originalName: string} | null> {
+    const rows = await logseq.DB.datascriptQuery(
+        `
+        [:find ?name ?orig
+            :in $ ?path
+            :where
+            [?page :block/name ?name]
+            [?page :block/original-name ?orig]
+            [?page :block/file ?f]
+            [?f :file/path ?path]]
+        `,
+        JSON.stringify(path)
+    );
+    if (!rows || rows.length === 0) return null;
+    return {name: rows[0][0], originalName: rows[0][1]};
 }
 
 function registerButton(emoji: string, title: string, onClick: () => void) {
@@ -42,6 +67,7 @@ async function content(pageName: string, ignoreCollapsed = true): Promise<string
     }
 
     const blocks = await logseq.Editor.getPageBlocksTree(pageName);
+    if (!blocks) return '';
     for (const block of blocks) walk(block);
 
     const content = lines.join('\n')
@@ -70,21 +96,29 @@ async function updateStatus(pageName: string) {
                 const pageContent = `The following sync conflicts were found`;
                 const parentBlock = await logseq.Editor.insertBlock(pageName, pageContent);
                 for (const file of files) {
-                    const conflictFileName = file[0];
-                    const conflictContent = await content(conflictFileName);
-                    const originalFileName = conflictFileName.replace(/\.sync-conflict-.*/, "");
-                    const originalContent = await content(originalFileName);
-                    const diff = createTwoFilesPatch(originalFileName, conflictFileName, originalContent, conflictContent);
+                    const conflictDisplayName: string = file[0];
+                    const conflictFilePath: string = file[1];
+                    const conflictContent = await content(conflictDisplayName);
+                    // Strip the .sync-conflict-<timestamp>-<deviceid> suffix from the file path
+                    // and resolve the original page via its on-disk file path. This works for
+                    // journal pages, namespaced pages, and any page whose Logseq name differs
+                    // from its filename stem.
+                    const originalFilePath = conflictFilePath.replace(/\.sync-conflict-[^.\/]*/, "");
+                    const originalPage = await findPageByFilePath(originalFilePath);
+                    const originalDisplayName = originalPage?.originalName ?? conflictDisplayName.replace(/\.sync-conflict-.*/, "");
+                    const originalContent = originalPage ? await content(originalPage.name) : '';
+                    const diff = createTwoFilesPatch(originalDisplayName, conflictDisplayName, originalContent, conflictContent);
                     const added = diff.split('\n').filter(value => value.startsWith('+') && !value.startsWith('+++')).length;
                     const removed = diff.split('\n').filter(value => value.startsWith('-') && !value.startsWith('---')).length;
                     const fileBlock = await logseq.Editor.insertBlock(
                         parentBlock.uuid,
                         `
-                        [[${originalFileName}]] - [[${conflictFileName}]] (${count(added, 'added line')}, ${count(removed, 'removed line')}) - {{{renderer syncthing-conflict-helper--mark-as-resolved, ${conflictFileName}}}}
+                        [[${originalDisplayName}]] - [[${conflictDisplayName}]] (${count(added, 'added line')}, ${count(removed, 'removed line')}) - {{{renderer syncthing-conflict-helper--mark-as-resolved, ${conflictDisplayName}}}}
                         collapsed:: true
                         `.replace(/^ */gm, ''),
                         {focus: false}
                     );
+                    if (!fileBlock) continue;
                     await logseq.Editor.insertBlock(
                         fileBlock.uuid,
                         `
